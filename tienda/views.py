@@ -664,18 +664,26 @@ class CategoryViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
-@permission_classes([AllowAny])
 class BrandViewSet(viewsets.ModelViewSet):
-    queryset = Brand.objects.all()
     serializer_class = BrandSerializer
-    
-    def get_queryset(self):
-        category_id = self.request.query_params.get("category")
+    permission_classes = [AllowAny]
+
+    def list(self, request, *args, **kwargs):
+        category_id = request.query_params.get("category")
 
         if category_id:
-            return Brand.objects.filter(products__category_id=category_id).distinct()
+            brands = Brand.objects.filter(products__category_id=category_id).distinct()
+            if not brands.exists():
+                return Response(
+                    {"message": "No hay marcas disponibles para la categoría especificada."},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            queryset = brands
+        else:
+            queryset = Brand.objects.all()
 
-        return super().get_queryset()
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
 
 
 class UserUpdateView(APIView):
