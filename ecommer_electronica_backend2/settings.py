@@ -87,7 +87,7 @@ STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "https://digitalworld-tuc.netlify.app",
-    "https://digital-world-production.up.railway.app",
+    "https://digital-world-2-0.onrender.com",
 ]
 
 CORS_ALLOW_CREDENTIALS = True
