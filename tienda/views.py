@@ -664,9 +664,10 @@ class CategoryViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
+@permission_classes([AllowAny])
 class BrandViewSet(viewsets.ModelViewSet):
     serializer_class = BrandSerializer
-    permission_classes = [AllowAny]
+    queryset = Brand.objects.all()
 
     def list(self, request, *args, **kwargs):
         category_id = request.query_params.get("category")
