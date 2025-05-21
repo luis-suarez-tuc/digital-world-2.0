@@ -535,6 +535,12 @@ class CommentViewSet(viewsets.ModelViewSet):
             if page_identifier:
                 comments = Comment.objects.filter(page_id=page_identifier)
 
+                if not comments.exists():
+                    return Response(
+                        {"message": "No hay comentarios disponibles."},
+                        status=status.HTTP_404_NOT_FOUND,
+                    )
+
                 if user:
                     comments = sorted(
                         comments, key=lambda comment: (comment.user.id != user)
@@ -547,6 +553,12 @@ class CommentViewSet(viewsets.ModelViewSet):
 
             if product_id:
                 comments = Comment.objects.filter(product=product_id)
+
+                if not comments.exists():
+                    return Response(
+                        {"message": "No hay comentarios disponibles."},
+                        status=status.HTTP_404_NOT_FOUND,
+                    )
 
                 if user:
                     comments = sorted(
