@@ -176,18 +176,18 @@ def google_login(request):
         user_authenticated = id_token.verify_oauth2_token(
             credential, google_requests.Request(), client_id, clock_skew_in_seconds=60
         )
-        print("User authenticated:", user_authenticated)
 
         if user_authenticated:
             email = user_authenticated.get("email")
             username = user_authenticated.get("name")
             profile_picture = user_authenticated.get("picture")
-            print("Profile picture:", profile_picture)
             user = User.objects.filter(email=email).first()
+
             if not user:
                 base_username = username or email.split("@")[0]
                 unique_username = base_username
                 counter = 1
+
                 while User.objects.filter(username=unique_username).exists():
                     unique_username = f"{base_username}_{counter}"
                     counter += 1
@@ -250,11 +250,9 @@ def google_login(request):
             )
 
     except ValueError as e:
-        print("Error de verificación de token:", e)
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
     except Exception as e:
-        print("Error inesperado:", e)
         return Response(
             {"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
@@ -445,7 +443,7 @@ class ProductViewSet(viewsets.ModelViewSet):
         try:
             product = Product.objects.get(pk=pk)
         except Product.DoesNotExist:
-            return Response({"detail": "Product not found."}, status=404)
+            return Response({"detail": "No hay productos disponibles."}, status=404)
 
         final_price = product.price
         if product.discount_percentage:
@@ -479,7 +477,7 @@ class ProductViewSet(viewsets.ModelViewSet):
             serializer = ProductSerializer(combined_products, many=True, context={'request': request})
             return Response(serializer.data, status=200)
         
-        return Response({"detail": "No related products found."}, status=404)
+        return Response({"detail": "No hay productos disponibles."}, status=404)
     
 
 class CommentViewSet(viewsets.ModelViewSet):
@@ -624,7 +622,7 @@ class CategoryViewSet(viewsets.ModelViewSet):
 
     def list(self, request, *args, **kwargs):
         if not self.queryset.exists():
-            return Response({"message": "No categories found."}, status=404)
+            return Response({"message": "No hay categorias disponibles."}, status=404)
         
         return super().list(request, *args, **kwargs)
     
@@ -635,7 +633,7 @@ class CategoryViewSet(viewsets.ModelViewSet):
         ).distinct()
 
         if not categories_with_sale_products:
-            return Response({"message": "No categories with products on sale found."}, status=404)
+            return Response({"message": "No hay categorias disponibles."}, status=404)
 
         serializer = self.get_serializer(categories_with_sale_products, many=True)
         return Response(serializer.data)
@@ -648,7 +646,7 @@ class CategoryViewSet(viewsets.ModelViewSet):
         ).distinct()
 
         if not categories_with_recent_products:
-            return Response({"message": "No recent categories found."}, status=404)
+            return Response({"message": "No hay categorias disponibles."}, status=404)
 
         serializer = self.get_serializer(categories_with_recent_products, many=True)
         return Response(serializer.data)
@@ -722,8 +720,8 @@ class ProductImageViewSet(viewsets.ModelViewSet):
 
     def perform_destroy(self, instance):
         if instance.image:
-            # Extraer el public_id de la URL de Cloudinary
-            public_id = instance.image.split("/")[-1].split(".")[0]  # Obtiene el ID sin la extensión
-            cloudinary.uploader.destroy(public_id)  # Borra la imagen en Cloudinary
+
+            public_id = instance.image.split("/")[-1].split(".")[0]
+            cloudinary.uploader.destroy(public_id)
         
         instance.delete()
