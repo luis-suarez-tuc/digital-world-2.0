@@ -1,5 +1,6 @@
 import os
 import requests
+import uuid
 
 from rest_framework import status, viewsets
 from rest_framework.response import Response
@@ -8,10 +9,10 @@ from rest_framework.decorators import api_view, api_view, permission_classes, ac
 from rest_framework.viewsets import ModelViewSet
 from rest_framework.views import APIView
 from rest_framework.permissions import AllowAny, IsAuthenticated
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError, NotFound
 from rest_framework.authtoken.models import Token
 from rest_framework.pagination import LimitOffsetPagination
-from .models import Product, Category, Brand, Order, OrderItem, Comment, UserProfile
+from .models import Product, Category, Brand, Order, OrderItem, Comment, UserProfile, Cart, CartItem
 from tienda.models import Product, ProductImage
 from .serializers import (
     UserRegistrationSerializer,
@@ -24,7 +25,8 @@ from .serializers import (
     OrderItemSerializer,
     CommentSerializer,
     UserProfileSerializer,
-    ProductImageSerializer
+    ProductImageSerializer,
+    CartSerializer
 )
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import User
@@ -430,6 +432,9 @@ class ProductViewSet(viewsets.ModelViewSet):
             Q(name__icontains=search_term) | Q(products__name__icontains=search_term)
         ).distinct()
 
+        if not products.exists() and not categories.exists():
+            return Response({"message": "No hay productos disponibles."}, status=404)
+
         product_serializer = ProductSerializer(products, many=True)
         category_serializer = CategorySerializer(categories, many=True)
 
@@ -746,3 +751,183 @@ class ProductImageViewSet(viewsets.ModelViewSet):
             cloudinary.uploader.destroy(public_id)
         
         instance.delete()
+        
+   
+class CartViewSet(viewsets.GenericViewSet):
+    queryset = Cart.objects.all()
+    serializer_class = CartSerializer
+    permission_classes = [AllowAny]
+
+    def _get_current_user_cart(self, request):
+        if request.user.is_authenticated:
+            cart, created = Cart.objects.get_or_create(user=request.user)
+            return cart
+        else:
+            session_key = request.headers.get('X-Session-Key')
+            if not session_key:
+                raise NotFound("No se proporcionó X-Session-Key. Por favor, asegúrese de enviarlo si es un usuario invitado.")
+            try:
+                cart = Cart.objects.get(session_key=session_key)
+                return cart
+            except Cart.DoesNotExist:
+                raise NotFound("Carrito de invitado no encontrado para el X-Session-Key proporcionado.")
+
+    @action(detail=False, methods=['get', 'post'], url_path='my_cart')
+    def my_cart(self, request):
+        if request.method == 'GET':
+            try:
+                cart = self._get_current_user_cart(request)
+                serializer = self.get_serializer(cart)
+                return Response(serializer.data, status=status.HTTP_200_OK)
+            except NotFound as e:
+                return Response({'detail': str(e)}, status=status.HTTP_404_NOT_FOUND)
+            except ValidationError as e:
+                return Response({'detail': e.detail}, status=status.HTTP_400_BAD_REQUEST)
+
+        elif request.method == 'POST':
+            if request.user.is_authenticated:
+                return Response(
+                    {"detail": "Los usuarios autenticados no pueden crear carritos de invitado de esta manera. Utilice GET /my_cart/ para obtener su carrito."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            session_key = str(uuid.uuid4())
+            while Cart.objects.filter(session_key=session_key).exists():
+                session_key = str(uuid.uuid4())
+
+            cart = Cart.objects.create(session_key=session_key)
+            
+            serializer = self.get_serializer(cart)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=['post'], url_path='add_item')
+    def add_item(self, request):
+        product_id = request.data.get('product_id')
+        quantity = request.data.get('quantity')
+
+        if not product_id or not quantity:
+            raise ValidationError({'detail': 'product_id y quantity son requeridos.'})
+
+        try:
+            cart = self._get_current_user_cart(request)
+            product = get_object_or_404(Product.objects.select_for_update(), id=product_id)
+        except NotFound as e:
+            return Response({'detail': str(e)}, status=status.HTTP_404_NOT_FOUND)
+        except Product.DoesNotExist:
+            return Response({'detail': 'Producto no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            quantity = int(quantity)
+            if quantity <= 0:
+                raise ValidationError({'detail': 'La cantidad debe ser un número positivo.'})
+        except ValueError:
+            raise ValidationError({'detail': 'La cantidad debe ser un número entero.'})
+
+        with transaction.atomic():
+            cart_item_query = CartItem.objects.select_for_update().filter(cart=cart, product=product)
+
+            if cart_item_query.exists():
+                cart_item = cart_item_query.first()
+                new_total_quantity = cart_item.quantity + quantity
+            else:
+                cart_item = None
+                new_total_quantity = quantity
+
+            if product.stock < new_total_quantity:
+                raise ValidationError({
+                    'detail': f"Stock insuficiente para {product.name}. "
+                              f"Disponible: {product.stock}, Solicitado: {new_total_quantity} (incluyendo lo que ya hay en el carrito)."
+                })
+
+            if cart_item:
+                cart_item.quantity = new_total_quantity
+                cart_item.save()
+                status_code = status.HTTP_200_OK
+            else:
+                CartItem.objects.create(cart=cart, product=product, quantity=quantity)
+                status_code = status.HTTP_201_CREATED
+
+            cart.save()
+
+            serializer = CartSerializer(cart)
+            return Response(serializer.data, status=status_code)
+
+    @action(detail=False, methods=['patch'], url_path='update_item')
+    def update_item(self, request):
+        product_id = request.data.get('product_id')
+        new_quantity = request.data.get('quantity')
+
+        if not product_id or new_quantity is None:
+            raise ValidationError({'detail': 'product_id y quantity son requeridos.'})
+
+        try:
+            new_quantity = int(new_quantity)
+            if new_quantity < 0:
+                raise ValidationError({'detail': 'La cantidad no puede ser negativa.'})
+        except ValueError:
+            raise ValidationError({'detail': 'La cantidad debe ser un número entero.'})
+
+        try:
+            cart = self._get_current_user_cart(request)
+        except NotFound as e:
+            return Response({'detail': str(e)}, status=status.HTTP_404_NOT_FOUND)
+
+        with transaction.atomic():
+            try:
+                product = get_object_or_404(Product.objects.select_for_update(), id=product_id)
+                cart_item = get_object_or_404(CartItem.objects.select_for_update(), cart=cart, product=product)
+
+                if new_quantity == 0:
+                    cart_item.delete()
+                    status_code = status.HTTP_200_OK
+                elif product.stock < new_quantity:
+                    raise ValidationError({
+                        'detail': f"Stock insuficiente para {product.name}. Disponible: {product.stock}, Solicitado: {new_quantity}"
+                    })
+                else:
+                    cart_item.quantity = new_quantity
+                    cart_item.save()
+                    status_code = status.HTTP_200_OK
+
+                cart.save()
+
+                serializer = CartSerializer(cart)
+                return Response(serializer.data, status=status_code)
+
+            except (CartItem.DoesNotExist, Product.DoesNotExist):
+                raise NotFound("Producto o ítem de carrito no encontrado en este carrito.")
+
+    @action(detail=False, methods=['delete'], url_path='remove_item')
+    def remove_item(self, request):
+        product_id = request.data.get('product_id')
+        if not product_id:
+            raise ValidationError({'detail': 'product_id es requerido para eliminar un ítem.'})
+
+        try:
+            cart = self._get_current_user_cart(request)
+        except NotFound as e:
+            return Response({'detail': str(e)}, status=status.HTTP_404_NOT_FOUND)
+
+        with transaction.atomic():
+            try:
+                cart_item = CartItem.objects.select_for_update().get(cart=cart, product__id=product_id)
+                cart_item.delete()
+                cart.save()
+                serializer = self.get_serializer(cart)
+                return Response(serializer.data, status=status.HTTP_200_OK)
+            except CartItem.DoesNotExist:
+                return Response({'detail': 'El producto no se encuentra en el carrito.'}, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=False, methods=['post'], url_path='clear_cart')
+    def clear_cart(self, request):
+        try:
+            cart = self._get_current_user_cart(request)
+        except NotFound as e:
+            return Response({'detail': str(e)}, status=status.HTTP_404_NOT_FOUND)
+
+        with transaction.atomic():
+            cart.items.all().delete()
+            cart.save()
+        
+        serializer = self.get_serializer(cart)
+        return Response(serializer.data, status=status.HTTP_200_OK)

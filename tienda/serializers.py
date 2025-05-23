@@ -1,11 +1,11 @@
 from rest_framework import serializers
-from django.db import models
+from django.db import models, transaction
 from django.contrib.auth.models import User
-from .models import Product, Category, Brand, ProductImage, Order, OrderItem, Comment, UserProfile
+from .models import Product, Category, Brand, ProductImage, Order, OrderItem, Comment, UserProfile, Cart, CartItem
 from django.contrib.auth import authenticate
 from django.contrib.auth.hashers import check_password
 from django.db.models import Avg
-
+from rest_framework.exceptions import ValidationError
 
 class UserProfileSerializer(serializers.ModelSerializer):
     class Meta:
@@ -286,7 +286,7 @@ class OrderItemSerializer(serializers.ModelSerializer):
 
 
 class OrderSerializer(serializers.ModelSerializer):
-    order_items = OrderItemSerializer(many=True, read_only=True)
+    order_items = OrderItemSerializer(many=True, read_only=False)
 
     class Meta:
         model = Order
@@ -304,43 +304,113 @@ class OrderSerializer(serializers.ModelSerializer):
             "order_date",
             "status",
         ]
-        read_only_fields = ["order_date", "total_amount", "status"]
+        read_only_fields = ["id", "order_date", "total_amount", "status"]
+
+    def validate(self, data):
+        if not data.get('order_items'):
+            raise serializers.ValidationError("El pedido debe contener al menos un producto.")
+        return data
 
     def create(self, validated_data):
         order_items_data = validated_data.pop("order_items")
         user = self.context["request"].user
 
-        total_amount = 0
+        with transaction.atomic():
+            total_amount = 0
 
-        for order_item_data in order_items_data:
-            product = order_item_data["product"]
-            quantity = order_item_data["quantity"]
-            price = order_item_data["price"]
+            products_to_update = {}
 
-            total_amount += price * quantity
+            for item_data in order_items_data:
+                product_id = item_data.get("product").id
+                quantity = item_data.get("quantity")
 
-        order = Order.objects.create(
-            user=user,
-            name=validated_data["name"],
-            phone_number=validated_data["phone_number"],
-            dni=validated_data["dni"],
-            street=validated_data["street"],
-            number_of_street=validated_data["number_of_street"],
-            payment_method=validated_data["payment_method"],
-            comment=validated_data.get("comment", ""),
-            total_amount=total_amount,
-        )
+                if not product_id or not quantity or quantity <= 0:
+                    raise ValidationError("Datos de producto o cantidad inválidos para un ítem del pedido.")
 
-        # Crear los OrderItems después de crear la orden
-        for order_item_data in order_items_data:
-            OrderItem.objects.create(
-                order=order,
-                product=order_item_data["product"],
-                quantity=order_item_data["quantity"],
-                price=order_item_data["price"],
+                try:
+                    product = Product.objects.select_for_update().get(id=product_id)
+                except Product.DoesNotExist:
+                    raise ValidationError(f"Producto con ID {product_id} no encontrado.")
+
+                if product.stock < quantity:
+                    raise ValidationError(
+                        f"Stock insuficiente para el producto '{product.name}'. Disponible: {product.stock}, Solicitado: {quantity}"
+                    )
+
+                products_to_update[product_id] = {
+                    'product_instance': product,
+                    'quantity_to_reduce': quantity
+                }
+                
+                item_price = product.price
+                total_amount += item_price * quantity
+
+            order = Order.objects.create(
+                user=user,
+                name=validated_data["name"],
+                phone_number=validated_data["phone_number"],
+                dni=validated_data["dni"],
+                street=validated_data["street"],
+                number_of_street=validated_data["number_of_street"],
+                payment_method=validated_data["payment_method"],
+                comment=validated_data.get("comment", ""),
+                total_amount=total_amount,
+                status='pending'
             )
 
+            for item_data in order_items_data:
+                product_id = item_data.get("product").id
+                quantity = item_data.get("quantity")
+                
+                product = products_to_update[product_id]['product_instance']
+
+                OrderItem.objects.create(
+                    order=order,
+                    product=product,
+                    quantity=quantity,
+                    price_at_purchase=product.price 
+                )
+
+                product.stock -= quantity
+                product.save()
+
         return order
+
+
+class CartItemSerializer(serializers.ModelSerializer):
+    product = serializers.PrimaryKeyRelatedField(queryset=Product.objects.all())
+    product_detail = ProductSerializer(source='product', read_only=True)
+    total_price = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CartItem
+        fields = ['id', 'product', 'product_detail', 'quantity', 'added_at', 'total_price']
+        read_only_fields = ['id', 'added_at', 'total_price', 'product_detail']
+
+    def get_total_price(self, obj):
+        return obj.quantity * obj.product.price
+
+    def validate_quantity(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("La cantidad debe ser un número positivo.")
+        return value
+
+
+class CartSerializer(serializers.ModelSerializer):
+    items = CartItemSerializer(many=True, read_only=True)
+    total_price = serializers.SerializerMethodField()
+    total_quantity = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Cart
+        fields = ['id', 'user', 'session_key', 'created_at', 'updated_at', 'items', 'total_price', 'total_quantity']
+        read_only_fields = ['id', 'user', 'session_key', 'created_at', 'updated_at', 'items', 'total_price', 'total_quantity']
+
+    def get_total_price(self, obj):
+        return obj.total_price
+
+    def get_total_quantity(self, obj):
+        return obj.total_quantity
 
 
 class ProductImageSerializer(serializers.ModelSerializer):

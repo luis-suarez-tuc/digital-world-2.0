@@ -8,8 +8,8 @@ import cloudinary
 pymysql.install_as_MySQLdb()
 
 BASE_DIR = Path(__file__).resolve(strict=True).parent.parent
-env = environ.Env()
 
+env = environ.Env()
 env.read_env(os.path.join(BASE_DIR, '.env'))
 
 SECRET_KEY = env('SECRET_KEY')

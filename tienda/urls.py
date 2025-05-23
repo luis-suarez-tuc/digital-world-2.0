@@ -12,7 +12,8 @@ from .views import (
     OrderViewSet,
     CommentViewSet,
     UserProfileImageView,
-    ProductImageViewSet
+    ProductImageViewSet,
+    CartViewSet
 )
 from rest_framework.routers import DefaultRouter
 from django.conf import settings
@@ -24,6 +25,7 @@ router.register(r"categories", CategoryViewSet)
 router.register(r"brands", BrandViewSet)
 router.register(r"orders", OrderViewSet)
 router.register(r'comments', CommentViewSet)
+router.register(r'cart', CartViewSet, basename='cart')
 router.register(r'products/images', ProductImageViewSet, basename='product-image')
 
 urlpatterns = [
